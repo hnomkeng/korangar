@@ -621,20 +621,15 @@ impl Common {
         T: Renderer + EntityRenderer,
     {
         let camera_direction = camera.get_camera_direction();
-        let (texture, position, mirror) = self
-            .actions
-            .render(&self.sprite, &self.animation_state, camera_direction, self.head_direction);
-
-        renderer.render_entity(
+        self.actions.render(
             render_target,
+            renderer,
             camera,
-            texture,
+            &self.sprite,
+            &self.animation_state,
+            camera_direction,
+            self.head_direction,
             self.position,
-            Vector3::new(position.x, position.y, 0.0),
-            Vector2::from_value(1.0),
-            Vector2::new(1, 1),
-            Vector2::new(0, 0),
-            mirror,
             self.entity_id,
         );
     }

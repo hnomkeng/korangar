@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ops::Mul;
 use std::sync::Arc;
 
-use cgmath::{Array, Vector2};
+use cgmath::{Array, Vector2, Vector3};
 use derive_new::new;
 use procedural::*;
 use vulkano::image::ImageAccess;
@@ -10,10 +10,10 @@ use vulkano::image::ImageAccess;
 use super::Sprite;
 #[cfg(feature = "debug")]
 use crate::debug::*;
-use crate::graphics::{Color, DeferredRenderer, Renderer, Texture};
+use crate::graphics::{Camera, Color, DeferredRenderer, EntityRenderer, Renderer, Texture};
 use crate::interface::InterfaceSettings;
 use crate::loaders::{ByteConvertable, ByteStream, GameFileLoader, MinorFirst, Version};
-use crate::network::ClientTick;
+use crate::network::{ClientTick, EntityId};
 
 //pub enum Animations {
 //}
@@ -73,13 +73,20 @@ pub struct Actions {
 }
 
 impl Actions {
-    pub fn render(
+    pub fn render<T>(
         &self,
+        render_target: &mut T::Target,
+        renderer: &T,
+        camera: &dyn Camera,
         sprite: &Sprite,
         animation_state: &AnimationState,
         camera_direction: usize,
         head_direction: usize,
-    ) -> (Texture, Vector2<f32>, bool) {
+        world_position: Vector3<f32>,
+        entity_id: EntityId,
+    ) where
+        T: Renderer + EntityRenderer,
+    {
         let direction = (camera_direction + head_direction) % 8;
         let aa = animation_state.action * 8 + direction;
         let a = &self.actions[aa % self.actions.len()];
@@ -88,7 +95,7 @@ impl Actions {
         let factor = animation_state
             .factor
             .map(|factor| delay * (factor / 5.0))
-            .unwrap_or_else(|| delay * 50.0);
+            .unwrap_or_else(|| delay * 30.0);
 
         let frame = animation_state
             .duration
@@ -99,15 +106,32 @@ impl Actions {
 
         let fs = &a.motions[frame as usize % a.motions.len()];
 
-        let texture = sprite.textures[fs.sprite_clips[0].sprite_number as usize].clone();
-        let texture_size = texture.image().dimensions().width_height().map(|component| component as f32);
-        let offset = fs.sprite_clips[0].position.map(|component| component as f32);
+        for sprite_clip in &fs.sprite_clips {
+            let texture = &sprite.textures[sprite_clip.sprite_number as usize];
+            let offset = sprite_clip.position.map(|component| component as f32);
+            let dimesions = sprite_clip
+                .size
+                .unwrap_or_else(|| texture.image().dimensions().width_height().into())
+                .map(|component| component as f32);
+            let zoom = sprite_clip.zoom.unwrap_or(1.0);
+            let zoom2 = sprite_clip.zoom2.unwrap_or_else(|| Vector2::from_value(1.0));
 
-        (
-            texture,
-            Vector2::new(-offset.x, offset.y + texture_size[1] / 2.0) / 10.0,
-            fs.sprite_clips[0].mirror_on != 0,
-        )
+            let final_size = dimesions.zip(zoom2, f32::mul) * zoom;
+            let final_position = offset / 10.0 + final_size / 20.0; // - final_size / 2.0;
+
+            renderer.render_entity(
+                render_target,
+                camera,
+                texture.clone(),
+                world_position,
+                Vector3::new(final_position.x, final_position.y, 0.0),
+                Vector2::from_value(1.0),
+                Vector2::new(1, 1),
+                Vector2::new(0, 0),
+                sprite_clip.mirror_on != 0,
+                entity_id,
+            );
+        }
     }
 
     pub fn render2(
@@ -248,6 +272,8 @@ impl ActionLoader {
         }
 
         let actions_data = ActionsData::from_bytes(&mut byte_stream, None);
+
+        println!("version: {}", actions_data.version);
 
         let delays = actions_data
             .delays
