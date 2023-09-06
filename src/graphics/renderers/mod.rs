@@ -33,6 +33,7 @@ mod image;
 mod interface;
 mod picker;
 mod pipeline;
+mod point;
 mod sampler;
 #[cfg(feature = "debug")]
 mod settings;
@@ -52,8 +53,8 @@ use vulkano::command_buffer::{
 };
 use vulkano::device::Queue;
 use vulkano::format::{ClearColorValue, ClearValue, Format};
-use vulkano::image::view::ImageView;
-use vulkano::image::{Image, ImageCreateInfo, ImageUsage, SampleCount};
+use vulkano::image::view::{ImageView, ImageViewCreateInfo, ImageViewType};
+use vulkano::image::{Image, ImageCreateFlags, ImageCreateInfo, ImageSubresourceRange, ImageUsage, SampleCount};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter};
 use vulkano::pipeline::graphics::color_blend::{AttachmentBlend, BlendFactor, BlendOp};
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass};
@@ -68,6 +69,7 @@ use self::image::{AttachmentImageFactory, AttachmentImageType};
 pub use self::interface::InterfaceRenderer;
 use self::picker::PickerSubrenderer;
 pub use self::picker::{PickerRenderer, PickerTarget};
+pub use self::point::PointShadowRenderer;
 #[cfg(feature = "debug")]
 pub use self::settings::RenderSettings;
 pub use self::shadow::ShadowRenderer;
@@ -197,6 +199,10 @@ pub trait MarkerRenderer {
         hovered: bool,
     ) where
         Self: Renderer;
+}
+
+pub trait VariantEq {
+    fn variant_eq(&self, other: &Self) -> bool;
 }
 
 pub enum RenderTargetState {
@@ -524,51 +530,112 @@ pub struct SingleRenderTarget<F: IntoFormat, S: PartialEq, C> {
     framebuffer: Arc<Framebuffer>,
     pub image: Arc<ImageView>,
     pub state: RenderTargetState,
+    cube_framebuffers: Option<[Arc<Framebuffer>; 6]>,
+    pub test_image: Option<Arc<ImageView>>,
     clear_value: C,
     bound_subrenderer: Option<S>,
     _phantom_data: PhantomData<F>,
 }
 
-impl<F: IntoFormat, S: PartialEq, C> SingleRenderTarget<F, S, C> {
+impl<F: IntoFormat, S: PartialEq + VariantEq, C> SingleRenderTarget<F, S, C> {
     pub fn new(
         memory_allocator: Arc<MemoryAllocator>,
         queue: Arc<Queue>,
         render_pass: Arc<RenderPass>,
         dimensions: [u32; 2],
+        array_layers: u32,
         sample_count: SampleCount,
         image_usage: ImageUsage,
         clear_value: C,
     ) -> Self {
+        let (flags, view_type) = match array_layers {
+            1 => (ImageCreateFlags::default(), ImageViewType::Dim2d),
+            6 => (ImageCreateFlags::CUBE_COMPATIBLE, ImageViewType::Cube),
+            _ => panic!("Invalid array layer count"),
+        };
+
         let image = Image::new(
             &*memory_allocator,
             ImageCreateInfo {
+                flags,
                 format: F::into_format(),
                 extent: [dimensions[0], dimensions[1], 1],
                 samples: sample_count,
+                array_layers,
                 usage: image_usage,
                 ..Default::default()
             },
             AllocationCreateInfo::default(),
         )
         .unwrap();
-        let image = ImageView::new_default(image).unwrap();
+
+        let image_view_create_info = ImageViewCreateInfo::from_image(&image);
+        let image_view = ImageView::new(image.clone(), ImageViewCreateInfo {
+            view_type,
+            ..image_view_create_info
+        })
+        .unwrap();
 
         let framebuffer_create_info = FramebufferCreateInfo {
-            attachments: vec![image.clone()],
+            attachments: vec![image_view.clone()],
             ..Default::default()
         };
 
-        let framebuffer = Framebuffer::new(render_pass, framebuffer_create_info).unwrap();
+        let framebuffer = Framebuffer::new(render_pass.clone(), framebuffer_create_info).unwrap();
 
         let state = RenderTargetState::Ready;
         let bound_subrenderer = None;
+
+        let cube_framebuffers = (array_layers == 6).then(|| {
+            let create_thing = |range| {
+                let image_view_create_info = ImageViewCreateInfo::from_image(&image);
+                let image_view = ImageView::new(image.clone(), ImageViewCreateInfo {
+                    subresource_range: ImageSubresourceRange {
+                        array_layers: range,
+                        ..image_view_create_info.subresource_range
+                    },
+                    ..image_view_create_info
+                })
+                .unwrap();
+
+                let framebuffer_create_info = FramebufferCreateInfo {
+                    attachments: vec![image_view.clone()],
+                    ..Default::default()
+                };
+                Framebuffer::new(render_pass.clone(), framebuffer_create_info).unwrap()
+            };
+
+            [
+                create_thing(0..1),
+                create_thing(1..2),
+                create_thing(2..3),
+                create_thing(3..4),
+                create_thing(4..5),
+                create_thing(5..6),
+            ]
+        });
+
+        let test_image = (array_layers == 6).then(|| {
+            let image_view_create_info = ImageViewCreateInfo::from_image(&image);
+            ImageView::new(image.clone(), ImageViewCreateInfo {
+                view_type: ImageViewType::Dim2d,
+                subresource_range: ImageSubresourceRange {
+                    array_layers: 3..4,
+                    ..image_view_create_info.subresource_range
+                },
+                ..image_view_create_info
+            })
+            .unwrap()
+        });
 
         Self {
             memory_allocator,
             queue,
             framebuffer,
-            image,
+            image: image_view,
             state,
+            cube_framebuffers,
+            test_image,
             clear_value,
             bound_subrenderer,
             _phantom_data: Default::default(),
@@ -577,9 +644,21 @@ impl<F: IntoFormat, S: PartialEq, C> SingleRenderTarget<F, S, C> {
 
     #[profile]
     pub fn bind_subrenderer(&mut self, subrenderer: S) -> bool {
-        let already_bound = self.bound_subrenderer.contains(&subrenderer);
+        let already_bound = self.bound_subrenderer.as_ref().is_some_and(|bound| bound.variant_eq(&subrenderer));
         self.bound_subrenderer = Some(subrenderer);
         !already_bound
+    }
+
+    pub fn check_subrenderer(&mut self, subrenderer: &S) -> bool {
+        self.bound_subrenderer.as_ref().is_some_and(|bound| bound.variant_eq(subrenderer))
+    }
+
+    pub fn check_parameters(&mut self, subrenderer: &S) -> bool {
+        self.bound_subrenderer.as_ref().is_some_and(|bound| bound.variant_eq(subrenderer))
+    }
+
+    pub fn bind_subrenderer_2(&mut self, subrenderer: S) {
+        self.bound_subrenderer = Some(subrenderer);
     }
 }
 
@@ -604,11 +683,59 @@ impl<F: IntoFormat, S: PartialEq> SingleRenderTarget<F, S, ClearValue> {
         self.state = RenderTargetState::Rendering(builder);
     }
 
+    #[profile("start cube frame")]
+    pub fn start_cube(&mut self) {
+        let builder = AutoCommandBufferBuilder::primary(
+            &*self.memory_allocator,
+            self.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+
+        self.state = RenderTargetState::Rendering(builder);
+    }
+
+    #[profile("start cube render pass")]
+    pub fn start_cube_pass(&mut self, cube_face: usize) {
+        let render_pass_begin_info = RenderPassBeginInfo {
+            clear_values: vec![Some(self.clear_value)],
+            ..RenderPassBeginInfo::framebuffer(self.cube_framebuffers.as_ref().unwrap()[cube_face].clone())
+        };
+
+        self.state
+            .get_builder()
+            .begin_render_pass(render_pass_begin_info, SubpassBeginInfo::default())
+            .unwrap();
+    }
+
     #[profile("finalize buffer")]
     pub fn finish(&mut self) {
         let mut builder = self.state.take_builder();
 
         builder.end_render_pass(SubpassEndInfo::default()).unwrap();
+
+        let command_buffer = builder.build().unwrap();
+        let semaphore = command_buffer
+            .execute(self.queue.clone())
+            .unwrap()
+            .boxed()
+            .then_signal_semaphore_and_flush()
+            .unwrap();
+
+        self.state = RenderTargetState::Semaphore(semaphore);
+        self.bound_subrenderer = None;
+    }
+
+    #[profile("finalize buffer")]
+    pub fn finish_cube_pass(&mut self) {
+        let builder = self.state.get_builder();
+        builder.end_render_pass(SubpassEndInfo::default()).unwrap();
+        self.bound_subrenderer = None;
+    }
+
+    #[profile("finalize cube buffer")]
+    pub fn finish_cube(&mut self) {
+        let builder = self.state.take_builder();
 
         let command_buffer = builder.build().unwrap();
         let semaphore = command_buffer

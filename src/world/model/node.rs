@@ -107,7 +107,7 @@ pub struct Node {
     #[hidden_element]
     pub transform_matrix: Matrix4<f32>,
     #[hidden_element]
-    pub vertex_buffer: Subbuffer<[ModelVertex]>,
+    pub vertex_buffer: Option<Subbuffer<[ModelVertex]>>,
     #[hidden_element]
     pub textures: Vec<Arc<ImageView>>,
     pub child_nodes: Vec<Node>,
@@ -172,14 +172,16 @@ impl Node {
     ) where
         T: Renderer + GeometryRenderer,
     {
-        renderer.render_geometry(
-            render_target,
-            camera,
-            self.vertex_buffer.clone(),
-            &self.textures,
-            self.world_matrix(transform, client_tick),
-            time,
-        );
+        if let Some(vertex_buffer) = self.vertex_buffer.clone() {
+            renderer.render_geometry(
+                render_target,
+                camera,
+                vertex_buffer,
+                &self.textures,
+                self.world_matrix(transform, client_tick),
+                time,
+            );
+        }
 
         self.child_nodes
             .iter()

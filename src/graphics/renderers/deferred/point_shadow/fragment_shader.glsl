@@ -8,41 +8,47 @@ layout(input_attachment_index = 0, set = 0, binding = 0) uniform subpassInputMS 
 layout(input_attachment_index = 1, set = 0, binding = 1) uniform subpassInputMS normal_in;
 layout(input_attachment_index = 2, set = 0, binding = 2) uniform subpassInputMS depth_in;
 
-layout (set = 0, binding = 3) uniform sampler2D shadow_map_in;
-
-layout(set = 0, binding = 4) uniform Matrices {
+layout(set = 0, binding = 3) uniform Matrices {
     mat4 screen_to_world;
-    mat4 light;
 } matrices;
 
+layout(set = 1, binding = 0) uniform samplerCube shadow_map_in;
+
 layout(push_constant) uniform Constants {
-    vec3 direction;
+    vec2 screen_position;
+    vec2 screen_size;
+    vec3 position;
     vec3 color;
+    float range;
 } constants;
 
 vec3 calculate_sample(int sample_index) {
 
     float depth = subpassLoad(depth_in, sample_index).x;
+
     vec4 pixel_position_world_space = matrices.screen_to_world * vec4(position, depth, 1.0);
     pixel_position_world_space /= pixel_position_world_space.w;
 
     vec3 normal = normalize(subpassLoad(normal_in, sample_index).rgb);
-    float light_percent = dot(normalize(-constants.direction), normal);
-    light_percent = clamp(light_percent, 0.0, 1.0);
+    vec3 light_direction = normalize(pixel_position_world_space.xyz - constants.position);
 
-    // triangles flicker black if the bias is too low 
-    float bias = 0.0025 * tan(acos(light_percent));
+    float light_percent = max(dot(light_direction, normal), 0.0);
+    // This could be the unnoralized version of the light_direction to save one operation
+    float light_distance = length(constants.position - pixel_position_world_space.xyz);
+
+    float shadow_map_depth = texture(shadow_map_in, light_direction).r;
+
+    float bias = 0.05 * tan(acos(light_percent));
     bias = clamp(bias, 0, 0.005);
 
-    vec4 light_position = matrices.light * pixel_position_world_space;
-    vec3 light_coords = light_position.xyz / light_position.w;
-    light_coords.xy = light_coords.xy * 0.5 + 0.5;
+    float mapped_distance = light_distance / 255.9;
+    bool visibility = mapped_distance - bias < shadow_map_depth;
 
-    float shadow_map_depth = texture(shadow_map_in, light_coords.xy).r;
-    bool visibility = light_coords.z - bias < shadow_map_depth;
+    light_percent *= min(constants.range / exp(light_distance / 10.0), 0.7) * float(visibility);
 
     vec3 diffuse = subpassLoad(diffuse_in, sample_index).rgb;
-    return light_percent * constants.color * diffuse * float(visibility);
+
+    return light_percent * constants.color * diffuse;
 }
 
 void main() {

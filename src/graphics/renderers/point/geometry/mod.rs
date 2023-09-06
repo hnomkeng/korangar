@@ -1,13 +1,14 @@
-vertex_shader!("src/graphics/renderers/shadow/geometry/vertex_shader.glsl");
-fragment_shader!("src/graphics/renderers/shadow/geometry/fragment_shader.glsl");
+vertex_shader!("src/graphics/renderers/point/geometry/vertex_shader.glsl");
+fragment_shader!("src/graphics/renderers/point/geometry/fragment_shader.glsl");
 
 use std::sync::Arc;
 
-use cgmath::Matrix4;
+use cgmath::{Matrix4, Point3};
 use procedural::profile;
 use vulkano::descriptor_set::WriteDescriptorSet;
 use vulkano::device::{Device, DeviceOwned};
 use vulkano::image::sampler::Sampler;
+use vulkano::padded::Padded;
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::pipeline::{GraphicsPipeline, PipelineBindPoint};
 use vulkano::render_pass::Subpass;
@@ -17,8 +18,8 @@ use self::vertex_shader::{Constants, Matrices};
 #[cfg(feature = "debug")]
 use crate::debug::*;
 use crate::graphics::renderers::pipeline::PipelineBuilder;
+use crate::graphics::renderers::point::PointShadowSubrenderer;
 use crate::graphics::renderers::sampler::{create_new_sampler, SamplerType};
-use crate::graphics::renderers::shadow::ShadowSubrenderer;
 use crate::graphics::*;
 
 pub struct GeometryRenderer {
@@ -51,14 +52,14 @@ impl GeometryRenderer {
         vertex_shader: &EntryPoint,
         fragment_shader: &EntryPoint,
     ) -> Arc<GraphicsPipeline> {
-        PipelineBuilder::<_, { ShadowRenderer::subpass() }>::new([vertex_shader, fragment_shader])
+        PipelineBuilder::<_, { PointShadowRenderer::subpass() }>::new([vertex_shader, fragment_shader])
             .vertex_input_state::<ModelVertex>(vertex_shader)
             .simple_depth_test()
             .build(device, subpass)
     }
 
     #[profile]
-    fn bind_pipeline(&self, render_target: &mut <ShadowRenderer as Renderer>::Target) {
+    fn bind_pipeline(&self, render_target: &mut <PointShadowRenderer as Renderer>::Target) {
         #[cfg(feature = "debug")]
         let measurement = start_measurement("bind pipeline");
 
@@ -73,7 +74,7 @@ impl GeometryRenderer {
     }
 
     #[profile]
-    fn bind_parameters(&self, render_target: &mut <ShadowRenderer as Renderer>::Target, camera: &dyn Camera, time: f32) {
+    fn bind_parameters(&self, render_target: &mut <PointShadowRenderer as Renderer>::Target, camera: &dyn Camera, time: f32) {
         #[cfg(feature = "debug")]
         let measurement = start_measurement("update matrices buffer");
 
@@ -142,8 +143,9 @@ impl GeometryRenderer {
     #[profile("geometry renderer")]
     pub fn render(
         &self,
-        render_target: &mut <ShadowRenderer as Renderer>::Target,
+        render_target: &mut <PointShadowRenderer as Renderer>::Target,
         camera: &dyn Camera,
+        light_position: Point3<f32>,
         vertex_buffer: Subbuffer<[ModelVertex]>,
         textures: &[Arc<ImageView>],
         world_matrix: Matrix4<f32>,
@@ -151,7 +153,7 @@ impl GeometryRenderer {
     ) {
         let (view_matrix, projection_matrix) = camera.view_projection_matrices();
         let view_projection_matrix = projection_matrix * view_matrix;
-        let subrenderer = ShadowSubrenderer::Geometry(view_projection_matrix, time);
+        let subrenderer = PointShadowSubrenderer::Geometry(view_projection_matrix, time);
 
         if !render_target.check_subrenderer(&subrenderer) {
             self.bind_pipeline(render_target);
@@ -198,6 +200,7 @@ impl GeometryRenderer {
         let vertex_count = vertex_buffer.size() as usize / std::mem::size_of::<ModelVertex>();
         let constants = Constants {
             world: world_matrix.into(),
+            light_position: light_position.into(),
         };
 
         #[cfg(feature = "debug")]

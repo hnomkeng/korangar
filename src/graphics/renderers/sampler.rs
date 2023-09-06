@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use vulkano::device::Device;
-use vulkano::image::sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo};
+use vulkano::image::sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerReductionMode};
+use vulkano::pipeline::graphics::depth_stencil::CompareOp;
 
 pub(super) enum SamplerType {
     Linear,

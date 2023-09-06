@@ -1,74 +1,62 @@
-vertex_shader!("src/graphics/renderers/picker/entity/vertex_shader.glsl");
-fragment_shader!("src/graphics/renderers/picker/entity/fragment_shader.glsl");
+vertex_shader!("src/graphics/renderers/point/entity/vertex_shader.glsl");
+fragment_shader!("src/graphics/renderers/point/entity/fragment_shader.glsl");
 
 use std::sync::Arc;
 
-use cgmath::{Vector2, Vector3};
+use cgmath::{Point3, Vector2, Vector3};
 use procedural::profile;
 use vulkano::descriptor_set::WriteDescriptorSet;
 use vulkano::device::{Device, DeviceOwned};
 use vulkano::image::sampler::Sampler;
+use vulkano::padded::Padded;
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::pipeline::{GraphicsPipeline, PipelineBindPoint};
 use vulkano::render_pass::Subpass;
 use vulkano::shader::EntryPoint;
 
 use self::vertex_shader::{Constants, Matrices};
-use super::PickerSubrenderer;
+use super::PointShadowSubrenderer;
 use crate::graphics::renderers::pipeline::PipelineBuilder;
 use crate::graphics::renderers::sampler::{create_new_sampler, SamplerType};
-use crate::graphics::renderers::PickerTarget;
 use crate::graphics::*;
-use crate::network::EntityId;
 
 pub struct EntityRenderer {
     memory_allocator: Arc<MemoryAllocator>,
-    vertex_shader: EntryPoint,
-    fragment_shader: EntryPoint,
     matrices_buffer: MatrixAllocator<Matrices>,
     nearest_sampler: Arc<Sampler>,
     pipeline: Arc<GraphicsPipeline>,
 }
 
 impl EntityRenderer {
-    pub fn new(memory_allocator: Arc<MemoryAllocator>, subpass: Subpass, viewport: Viewport) -> Self {
+    pub fn new(memory_allocator: Arc<MemoryAllocator>, subpass: Subpass) -> Self {
         let device = memory_allocator.device().clone();
         let vertex_shader = vertex_shader::entry_point(&device);
         let fragment_shader = fragment_shader::entry_point(&device);
         let matrices_buffer = MatrixAllocator::new(&memory_allocator);
         let nearest_sampler = create_new_sampler(&device, SamplerType::Nearest);
-        let pipeline = Self::create_pipeline(device, subpass, viewport, &vertex_shader, &fragment_shader);
+        let pipeline = Self::create_pipeline(device, subpass, &vertex_shader, &fragment_shader);
 
         Self {
             memory_allocator,
-            pipeline,
-            vertex_shader,
-            fragment_shader,
             matrices_buffer,
             nearest_sampler,
+            pipeline,
         }
-    }
-
-    #[profile]
-    pub fn recreate_pipeline(&mut self, device: Arc<Device>, subpass: Subpass, viewport: Viewport) {
-        self.pipeline = Self::create_pipeline(device, subpass, viewport, &self.vertex_shader, &self.fragment_shader);
     }
 
     fn create_pipeline(
         device: Arc<Device>,
         subpass: Subpass,
-        viewport: Viewport,
         vertex_shader: &EntryPoint,
         fragment_shader: &EntryPoint,
     ) -> Arc<GraphicsPipeline> {
-        PipelineBuilder::<_, { PickerRenderer::subpass() }>::new([vertex_shader, fragment_shader])
-            .fixed_viewport(viewport)
+        PipelineBuilder::<_, { PointShadowRenderer::subpass() }>::new([vertex_shader, fragment_shader])
             .simple_depth_test()
             .build(device, subpass)
     }
 
     #[profile]
-    fn bind_pipeline(&self, render_target: &mut <PickerRenderer as Renderer>::Target, camera: &dyn Camera) {
+    fn bind_pipeline(&self, render_target: &mut <PointShadowRenderer as Renderer>::Target, camera: &dyn Camera) {
         let (view_matrix, projection_matrix) = camera.view_projection_matrices();
         let buffer = self.matrices_buffer.allocate(Matrices {
             view: view_matrix.into(),
@@ -79,30 +67,39 @@ impl EntityRenderer {
             0, buffer,
         )]);
 
+        let dimensions = render_target.image.image().extent().map(|component| component as f32);
+        let viewport = Viewport {
+            offset: [0.0, 0.0],
+            extent: [dimensions[0], dimensions[1]],
+            depth_range: 0.0..=1.0,
+        };
+
         render_target
             .state
             .get_builder()
             .bind_pipeline_graphics(self.pipeline.clone())
             .unwrap()
             .bind_descriptor_sets(PipelineBindPoint::Graphics, layout, set_id, set)
+            .unwrap()
+            .set_viewport(0, std::iter::once(viewport).collect())
             .unwrap();
     }
 
-    #[profile("render entity")]
+    #[profile("entity renderer")]
     pub fn render(
         &self,
-        render_target: &mut <PickerRenderer as Renderer>::Target,
+        render_target: &mut <PointShadowRenderer as Renderer>::Target,
         camera: &dyn Camera,
+        light_position: Point3<f32>,
         texture: Arc<ImageView>,
         position: Vector3<f32>,
         origin: Vector3<f32>,
         scale: Vector2<f32>,
         cell_count: Vector2<usize>,
         cell_position: Vector2<usize>,
-        entity_id: EntityId,
         mirror: bool,
     ) {
-        if render_target.bind_subrenderer(PickerSubrenderer::Entity) {
+        if render_target.bind_subrenderer(PointShadowSubrenderer::Entity) {
             self.bind_pipeline(render_target, camera);
         }
 
@@ -115,7 +112,7 @@ impl EntityRenderer {
         let world_matrix = camera.billboard_matrix(position, origin, size);
         let texture_size = Vector2::new(1.0 / cell_count.x as f32, 1.0 / cell_count.y as f32);
         let texture_position = Vector2::new(texture_size.x * cell_position.x as f32, texture_size.y * cell_position.y as f32);
-        let picker_target = PickerTarget::Entity(entity_id);
+        let (depth_offset, curvature) = camera.calculate_depth_offset_and_curvature(&world_matrix);
 
         let (layout, set, set_id) = allocate_descriptor_set(&self.pipeline, &self.memory_allocator, 1, [
             WriteDescriptorSet::image_view_sampler(0, texture, self.nearest_sampler.clone()),
@@ -123,9 +120,11 @@ impl EntityRenderer {
 
         let constants = Constants {
             world: world_matrix.into(),
+            light_position: Padded(light_position.into()),
             texture_position: [texture_position.x, texture_position.y],
             texture_size: [texture_size.x, texture_size.y],
-            identifier: picker_target.into(),
+            depth_offset,
+            curvature,
             mirror: mirror as u32,
         };
 

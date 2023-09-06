@@ -1,51 +1,50 @@
-vertex_shader!("src/graphics/renderers/picker/entity/vertex_shader.glsl");
-fragment_shader!("src/graphics/renderers/picker/entity/fragment_shader.glsl");
+vertex_shader!("src/graphics/renderers/deferred/point_shadow/vertex_shader.glsl");
+fragment_shader!("src/graphics/renderers/deferred/point_shadow/fragment_shader.glsl");
 
 use std::sync::Arc;
 
-use cgmath::{Vector2, Vector3};
+use cgmath::Vector3;
 use procedural::profile;
 use vulkano::descriptor_set::WriteDescriptorSet;
 use vulkano::device::{Device, DeviceOwned};
 use vulkano::image::sampler::Sampler;
+use vulkano::padded::Padded;
 use vulkano::pipeline::graphics::viewport::Viewport;
-use vulkano::pipeline::{GraphicsPipeline, PipelineBindPoint};
+use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint};
 use vulkano::render_pass::Subpass;
 use vulkano::shader::EntryPoint;
 
-use self::vertex_shader::{Constants, Matrices};
-use super::PickerSubrenderer;
+use self::fragment_shader::{Constants, Matrices};
+use super::DeferredSubrenderer;
 use crate::graphics::renderers::pipeline::PipelineBuilder;
 use crate::graphics::renderers::sampler::{create_new_sampler, SamplerType};
-use crate::graphics::renderers::PickerTarget;
 use crate::graphics::*;
-use crate::network::EntityId;
 
-pub struct EntityRenderer {
+pub struct PointLightWithShadowsRenderer {
     memory_allocator: Arc<MemoryAllocator>,
     vertex_shader: EntryPoint,
     fragment_shader: EntryPoint,
     matrices_buffer: MatrixAllocator<Matrices>,
-    nearest_sampler: Arc<Sampler>,
+    linear_sampler: Arc<Sampler>,
     pipeline: Arc<GraphicsPipeline>,
 }
 
-impl EntityRenderer {
+impl PointLightWithShadowsRenderer {
     pub fn new(memory_allocator: Arc<MemoryAllocator>, subpass: Subpass, viewport: Viewport) -> Self {
         let device = memory_allocator.device().clone();
         let vertex_shader = vertex_shader::entry_point(&device);
         let fragment_shader = fragment_shader::entry_point(&device);
         let matrices_buffer = MatrixAllocator::new(&memory_allocator);
-        let nearest_sampler = create_new_sampler(&device, SamplerType::Nearest);
+        let linear_sampler = create_new_sampler(&device, SamplerType::Linear);
         let pipeline = Self::create_pipeline(device, subpass, viewport, &vertex_shader, &fragment_shader);
 
         Self {
             memory_allocator,
-            pipeline,
             vertex_shader,
             fragment_shader,
             matrices_buffer,
-            nearest_sampler,
+            linear_sampler,
+            pipeline,
         }
     }
 
@@ -61,23 +60,25 @@ impl EntityRenderer {
         vertex_shader: &EntryPoint,
         fragment_shader: &EntryPoint,
     ) -> Arc<GraphicsPipeline> {
-        PipelineBuilder::<_, { PickerRenderer::subpass() }>::new([vertex_shader, fragment_shader])
+        PipelineBuilder::<_, { DeferredRenderer::lighting_subpass() }>::new([vertex_shader, fragment_shader])
             .fixed_viewport(viewport)
-            .simple_depth_test()
+            .color_blend(LIGHT_ATTACHMENT_BLEND)
             .build(device, subpass)
     }
 
     #[profile]
-    fn bind_pipeline(&self, render_target: &mut <PickerRenderer as Renderer>::Target, camera: &dyn Camera) {
-        let (view_matrix, projection_matrix) = camera.view_projection_matrices();
+    fn bind_pipeline(&self, render_target: &mut <DeferredRenderer as Renderer>::Target, camera: &dyn Camera) {
+        let screen_to_world_matrix = camera.get_screen_to_world_matrix();
         let buffer = self.matrices_buffer.allocate(Matrices {
-            view: view_matrix.into(),
-            projection: projection_matrix.into(),
+            screen_to_world: screen_to_world_matrix.into(),
         });
 
-        let (layout, set, set_id) = allocate_descriptor_set(&self.pipeline, &self.memory_allocator, 0, [WriteDescriptorSet::buffer(
-            0, buffer,
-        )]);
+        let (layout, set, set_id) = allocate_descriptor_set(&self.pipeline, &self.memory_allocator, 0, [
+            WriteDescriptorSet::image_view(0, render_target.diffuse_image.clone()),
+            WriteDescriptorSet::image_view(1, render_target.normal_image.clone()),
+            WriteDescriptorSet::image_view(2, render_target.depth_image.clone()),
+            WriteDescriptorSet::buffer(3, buffer),
+        ]);
 
         render_target
             .state
@@ -88,45 +89,38 @@ impl EntityRenderer {
             .unwrap();
     }
 
-    #[profile("render entity")]
+    #[profile("render point light")]
     pub fn render(
         &self,
-        render_target: &mut <PickerRenderer as Renderer>::Target,
+        render_target: &mut <DeferredRenderer as Renderer>::Target,
         camera: &dyn Camera,
-        texture: Arc<ImageView>,
+        light_image: Arc<ImageView>,
         position: Vector3<f32>,
-        origin: Vector3<f32>,
-        scale: Vector2<f32>,
-        cell_count: Vector2<usize>,
-        cell_position: Vector2<usize>,
-        entity_id: EntityId,
-        mirror: bool,
+        color: Color,
+        range: f32,
     ) {
-        if render_target.bind_subrenderer(PickerSubrenderer::Entity) {
+        if render_target.bind_subrenderer(DeferredSubrenderer::PointLightWithShadows) {
             self.bind_pipeline(render_target, camera);
         }
 
-        let image_dimensions = texture.image().extent();
-        let size = Vector2::new(
-            image_dimensions[0] as f32 * scale.x / 10.0,
-            image_dimensions[1] as f32 * scale.y / 10.0,
-        );
+        let (top_left_position, bottom_right_position) = camera.billboard_coordinates(position, 10.0 * (range / 0.05).ln());
 
-        let world_matrix = camera.billboard_matrix(position, origin, size);
-        let texture_size = Vector2::new(1.0 / cell_count.x as f32, 1.0 / cell_count.y as f32);
-        let texture_position = Vector2::new(texture_size.x * cell_position.x as f32, texture_size.y * cell_position.y as f32);
-        let picker_target = PickerTarget::Entity(entity_id);
+        if top_left_position.w < 0.1 && bottom_right_position.w < 0.1 && camera.distance_to(position) > range {
+            return;
+        }
+
+        let (screen_position, screen_size) = camera.screen_position_size(top_left_position, bottom_right_position);
 
         let (layout, set, set_id) = allocate_descriptor_set(&self.pipeline, &self.memory_allocator, 1, [
-            WriteDescriptorSet::image_view_sampler(0, texture, self.nearest_sampler.clone()),
+            WriteDescriptorSet::image_view_sampler(0, light_image, self.linear_sampler.clone()),
         ]);
 
         let constants = Constants {
-            world: world_matrix.into(),
-            texture_position: [texture_position.x, texture_position.y],
-            texture_size: [texture_size.x, texture_size.y],
-            identifier: picker_target.into(),
-            mirror: mirror as u32,
+            screen_position: [screen_position.x, screen_position.y],
+            screen_size: [screen_size.x, screen_size.y],
+            position: Padded([position.x, position.y, position.z]),
+            color: [color.red_f32(), color.green_f32(), color.blue_f32()],
+            range,
         };
 
         render_target

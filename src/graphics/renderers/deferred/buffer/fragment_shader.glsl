@@ -11,7 +11,8 @@ layout(input_attachment_index = 3, set = 0, binding = 3) uniform subpassInputMS 
 
 layout(set = 0, binding = 4) uniform usampler2D picker_buffer;
 layout(set = 0, binding = 5) uniform sampler2D shadow_buffer;
-layout(set = 0, binding = 6) uniform sampler2D font_atlas;
+layout(set = 0, binding = 6) uniform sampler2D point_shadow_buffer;
+layout(set = 0, binding = 7) uniform sampler2D font_atlas;
 
 layout(push_constant) uniform Constants {
     bool show_diffuse_buffer;
@@ -61,8 +62,9 @@ void main() {
 
     if (constants.show_shadow_buffer) {
         vec2 sample_position = (position * 0.5 + 0.5);
-        sample_position.y = 1.0 - sample_position.y;
-        float depth = texture(shadow_buffer, sample_position).x;
+        sample_position.y = sample_position.y;
+        float foo_depth = texture(shadow_buffer, sample_position).x;
+        float depth = texture(point_shadow_buffer, sample_position).x;
         output_color += depth;
     }
 

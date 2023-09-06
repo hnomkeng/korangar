@@ -10,6 +10,7 @@ mod geometry;
 mod indicator;
 mod overlay;
 mod point;
+mod point_shadow;
 mod rectangle;
 mod sprite;
 mod water;
@@ -20,6 +21,7 @@ use std::sync::Arc;
 #[cfg(feature = "debug")]
 use cgmath::SquareMatrix;
 use cgmath::{Matrix4, Vector2, Vector3, Vector4};
+use point_shadow::PointLightWithShadowsRenderer;
 use procedural::profile;
 use vulkano::device::{DeviceOwned, Queue};
 use vulkano::format::Format;
@@ -62,6 +64,7 @@ pub enum DeferredSubrenderer {
     AmbientLight,
     DirectionalLight,
     PointLight,
+    PointLightWithShadows,
     WaterLight,
     Indicator,
     #[cfg(feature = "debug")]
@@ -72,6 +75,31 @@ pub enum DeferredSubrenderer {
     Rectangle,
     Sprite,
     Effect,
+}
+
+impl VariantEq for DeferredSubrenderer {
+    fn variant_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Geometry, Self::Geometry) => true,
+            (Self::Entity, Self::Entity) => true,
+            (Self::Water, Self::Water) => true,
+            (Self::AmbientLight, Self::AmbientLight) => true,
+            (Self::DirectionalLight, Self::DirectionalLight) => true,
+            (Self::PointLight, Self::PointLight) => true,
+            (Self::PointLightWithShadows, Self::PointLightWithShadows) => true,
+            (Self::WaterLight, Self::WaterLight) => true,
+            (Self::Indicator, Self::Indicator) => true,
+            #[cfg(feature = "debug")]
+            (Self::BoundingBox, Self::BoundingBox) => true,
+            #[cfg(feature = "debug")]
+            (Self::Buffers, Self::Buffers) => true,
+            (Self::Overlay, Self::Overlay) => true,
+            (Self::Rectangle, Self::Rectangle) => true,
+            (Self::Sprite, Self::Sprite) => true,
+            (Self::Effect, Self::Effect) => true,
+            _ => false,
+        }
+    }
 }
 
 pub struct DeferredRenderer {
@@ -85,6 +113,7 @@ pub struct DeferredRenderer {
     ambient_light_renderer: AmbientLightRenderer,
     directional_light_renderer: DirectionalLightRenderer,
     point_light_renderer: PointLightRenderer,
+    point_light_with_shadows_renderer: PointLightWithShadowsRenderer,
     water_light_renderer: WaterLightRenderer,
     overlay_renderer: OverlayRenderer,
     rectangle_renderer: RectangleRenderer,
@@ -183,6 +212,8 @@ impl DeferredRenderer {
         let directional_light_renderer =
             DirectionalLightRenderer::new(memory_allocator.clone(), lighting_subpass.clone(), viewport.clone());
         let point_light_renderer = PointLightRenderer::new(memory_allocator.clone(), lighting_subpass.clone(), viewport.clone());
+        let point_light_with_shadows_renderer =
+            PointLightWithShadowsRenderer::new(memory_allocator.clone(), lighting_subpass.clone(), viewport.clone());
         let water_light_renderer = WaterLightRenderer::new(memory_allocator.clone(), lighting_subpass.clone(), viewport.clone());
         let overlay_renderer = OverlayRenderer::new(memory_allocator.clone(), lighting_subpass.clone(), viewport.clone());
         let rectangle_renderer = RectangleRenderer::new(memory_allocator.clone(), lighting_subpass.clone(), viewport.clone());
@@ -226,6 +257,7 @@ impl DeferredRenderer {
             ambient_light_renderer,
             directional_light_renderer,
             point_light_renderer,
+            point_light_with_shadows_renderer,
             water_light_renderer,
             overlay_renderer,
             rectangle_renderer,
@@ -267,6 +299,8 @@ impl DeferredRenderer {
         self.directional_light_renderer
             .recreate_pipeline(device.clone(), lighting_subpass.clone(), viewport.clone());
         self.point_light_renderer
+            .recreate_pipeline(device.clone(), lighting_subpass.clone(), viewport.clone());
+        self.point_light_with_shadows_renderer
             .recreate_pipeline(device.clone(), lighting_subpass.clone(), viewport.clone());
         self.water_light_renderer
             .recreate_pipeline(device.clone(), lighting_subpass.clone(), viewport.clone());
@@ -334,6 +368,19 @@ impl DeferredRenderer {
         range: f32,
     ) {
         self.point_light_renderer.render(render_target, camera, position, color, range);
+    }
+
+    pub fn point_light_with_shadows(
+        &self,
+        render_target: &mut <Self as Renderer>::Target,
+        camera: &dyn Camera,
+        light_image: Arc<ImageView>,
+        position: Vector3<f32>,
+        color: Color,
+        range: f32,
+    ) {
+        self.point_light_with_shadows_renderer
+            .render(render_target, camera, light_image, position, color, range);
     }
 
     pub fn water_light(&self, render_target: &mut <Self as Renderer>::Target, camera: &dyn Camera, water_level: f32) {
@@ -488,11 +535,18 @@ impl DeferredRenderer {
         render_target: &mut <Self as Renderer>::Target,
         picker_image: Arc<ImageView>,
         light_image: Arc<ImageView>,
+        point_light_image: Arc<ImageView>,
         font_atlas: Arc<ImageView>,
         render_settings: &RenderSettings,
     ) {
-        self.buffer_renderer
-            .render(render_target, picker_image, light_image, font_atlas, render_settings);
+        self.buffer_renderer.render(
+            render_target,
+            picker_image,
+            light_image,
+            point_light_image,
+            font_atlas,
+            render_settings,
+        );
     }
 }
 

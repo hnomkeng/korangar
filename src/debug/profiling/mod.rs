@@ -19,6 +19,7 @@ static mut PROFILER: MaybeUninit<&'static Mutex<Profiler>> = MaybeUninit::uninit
 static mut MAIN_THREAD_PROFILER: LazyLock<Mutex<Profiler>> = LazyLock::new(|| Mutex::new(Profiler::default()));
 static mut PICKER_THREAD_PROFILER: LazyLock<Mutex<Profiler>> = LazyLock::new(|| Mutex::new(Profiler::default()));
 static mut SHADOW_THREAD_PROFILER: LazyLock<Mutex<Profiler>> = LazyLock::new(|| Mutex::new(Profiler::default()));
+static mut POINT_SHADOW_THREAD_PROFILER: LazyLock<Mutex<Profiler>> = LazyLock::new(|| Mutex::new(Profiler::default()));
 static mut DEFERRED_THREAD_PROFILER: LazyLock<Mutex<Profiler>> = LazyLock::new(|| Mutex::new(Profiler::default()));
 
 static mut PROFILER_HALTED: AtomicBool = AtomicBool::new(false);
@@ -36,6 +37,7 @@ pub enum ProfilerThread {
     Main,
     Picker,
     Shadow,
+    PointShadow,
     Deferred,
 }
 
@@ -45,6 +47,7 @@ impl ProfilerThread {
             ProfilerThread::Main => unsafe { MAIN_THREAD_PROFILER.lock().unwrap() },
             ProfilerThread::Picker => unsafe { PICKER_THREAD_PROFILER.lock().unwrap() },
             ProfilerThread::Shadow => unsafe { SHADOW_THREAD_PROFILER.lock().unwrap() },
+            ProfilerThread::PointShadow => unsafe { POINT_SHADOW_THREAD_PROFILER.lock().unwrap() },
             ProfilerThread::Deferred => unsafe { DEFERRED_THREAD_PROFILER.lock().unwrap() },
         }
     }
@@ -177,6 +180,13 @@ pub fn profiler_start_picker_thread() -> ActiveMeasurement {
 
 pub fn profiler_start_shadow_thread() -> ActiveMeasurement {
     let profiler = unsafe { &SHADOW_THREAD_PROFILER };
+    let measurement = profiler.lock().unwrap().start_frame();
+    unsafe { PROFILER.write(profiler) };
+    measurement
+}
+
+pub fn profiler_start_point_shadow_thread() -> ActiveMeasurement {
+    let profiler = unsafe { &POINT_SHADOW_THREAD_PROFILER };
     let measurement = profiler.lock().unwrap().start_frame();
     unsafe { PROFILER.write(profiler) };
     measurement

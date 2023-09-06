@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use cgmath::Vector3;
 use procedural::*;
+use vulkano::image::view::ImageView;
 
 use crate::graphics::*;
 #[cfg(feature = "debug")]

@@ -18,7 +18,7 @@ use vulkano::render_pass::RenderPass;
 use self::rectangle::RectangleRenderer;
 use self::sprite::SpriteRenderer;
 use self::text::TextRenderer;
-use super::{IntoFormat, SubpassAttachments};
+use super::{IntoFormat, SubpassAttachments, VariantEq};
 use crate::graphics::{Color, MemoryAllocator, Renderer, SingleRenderTarget, SpriteRenderer as SpriteRendererTrait};
 use crate::loaders::{FontLoader, GameFileLoader, TextureLoader};
 
@@ -27,6 +27,17 @@ pub enum InterfaceSubrenderer {
     Rectangle,
     Sprite,
     Text,
+}
+
+impl VariantEq for InterfaceSubrenderer {
+    fn variant_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Rectangle, Self::Rectangle) => true,
+            (Self::Sprite, Self::Sprite) => true,
+            (Self::Text, Self::Text) => true,
+            _ => false,
+        }
+    }
 }
 
 pub struct InterfaceRenderer {
@@ -126,6 +137,7 @@ impl InterfaceRenderer {
             self.queue.clone(),
             self.render_pass.clone(),
             self.dimensions,
+            1,
             SampleCount::Sample4,
             ImageUsage::SAMPLED | ImageUsage::TRANSFER_DST | ImageUsage::COLOR_ATTACHMENT | ImageUsage::INPUT_ATTACHMENT,
             ClearColorValue::Float([0.0, 0.0, 0.0, 0.0]),

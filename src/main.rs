@@ -34,7 +34,7 @@ use std::io::Cursor;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use cgmath::{Vector2, Vector3, Zero};
+use cgmath::{EuclideanSpace, Vector2, Vector3, Zero};
 use image::io::Reader as ImageReader;
 use image::{EncodableLayout, ImageFormat};
 use network::SkillType;
@@ -63,6 +63,7 @@ use crate::system::{choose_physical_device, get_device_extensions, get_layers, G
 use crate::world::*;
 
 const ROLLING_CUTTER_ID: SkillId = SkillId(2036);
+const OFFSET: f32 = 20.0;
 
 fn main() {
     const DEFAULT_MAP: &str = "geffen";
@@ -153,6 +154,7 @@ fn main() {
         enabled_extensions: get_device_extensions(),
         enabled_features: vulkano::device::Features {
             sampler_anisotropy: true,
+            image_cube_array: true,
             #[cfg(feature = "debug")]
             wide_lines: true,
             #[cfg(feature = "debug")]
@@ -264,7 +266,13 @@ fn main() {
         swapchain_holder.window_size_u32(),
     );
 
-    let shadow_renderer = ShadowRenderer::new(memory_allocator, &mut game_file_loader, &mut texture_loader, queue);
+    let shadow_renderer = ShadowRenderer::new(
+        memory_allocator.clone(),
+        &mut game_file_loader,
+        &mut texture_loader,
+        queue.clone(),
+    );
+    let mut point_shadow_renderer = PointShadowRenderer::new(memory_allocator, &mut game_file_loader, &mut texture_loader, queue);
 
     #[cfg(feature = "debug")]
     timer.stop();
@@ -289,8 +297,14 @@ fn main() {
     let mut directional_shadow_targets = swapchain_holder
         .get_swapchain_images()
         .into_iter()
-        .map(|_| shadow_renderer.create_render_target(8192))
-        .collect::<Vec<<ShadowRenderer as Renderer>::Target>>();
+        .map(|_| shadow_renderer.create_render_target(8192, 1))
+        .collect::<Vec<_>>();
+
+    let mut cube_shadow_targets = swapchain_holder
+        .get_swapchain_images()
+        .into_iter()
+        .map(|_| point_shadow_renderer.create_render_target(512, 6))
+        .collect::<Vec<_>>();
 
     #[cfg(feature = "debug")]
     timer.stop();
@@ -329,6 +343,7 @@ fn main() {
     let mut start_camera = StartCamera::new();
     let mut player_camera = PlayerCamera::new();
     let mut directional_shadow_camera = ShadowCamera::new();
+    let mut point_shadow_camera = PointShadowCamera::new();
 
     start_camera.set_focus_point(cgmath::Point3::new(600.0, 0.0, 240.0));
     directional_shadow_camera.set_focus_point(cgmath::Point3::new(600.0, 0.0, 240.0));
@@ -359,7 +374,7 @@ fn main() {
     let welcome_message = ChatMessage::new("Welcome to Korangar!".to_string(), Color::rgb(220, 170, 220));
     let chat_messages = Rc::new(RefCell::new(vec![welcome_message]));
 
-    let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
+    let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
 
     event_loop.run(move |event, _, control_flow| {
         match event {
@@ -1084,6 +1099,7 @@ fn main() {
                     let player_position = entities[0].get_position();
                     player_camera.set_smoothed_focus_point(player_position);
                     directional_shadow_camera.set_focus_point(player_camera.get_focus_point());
+                    point_shadow_camera.set_camera_position(cgmath::Point3::from_vec(player_position + Vector3::new(0.0, OFFSET, 0.0)));
                 }
 
                 #[cfg(feature = "debug")]
@@ -1138,6 +1154,8 @@ fn main() {
 
                 #[cfg(feature = "debug")]
                 let matrices_measuremen = start_measurement("generate view and projection matrices");
+
+                let window_size_f32 = swapchain_holder.window_size();
 
                 if entities.is_empty() {
                     start_camera.generate_view_projection(swapchain_holder.window_size());
@@ -1198,6 +1216,8 @@ fn main() {
                 let walk_indicator_color = *interface.get_theme().indicator.walking;
                 let image_number = swapchain_holder.get_image_number();
                 let directional_shadow_image = directional_shadow_targets[image_number].image.clone();
+                let cube_shadow_image = cube_shadow_targets[image_number].image.clone();
+                let test_shadow_image = cube_shadow_targets[image_number].test_image.clone();
                 let screen_target = &mut screen_targets[image_number];
                 let window_size = swapchain_holder.window_size_f32();
                 let window_size_u32 = swapchain_holder.window_size_u32();
@@ -1224,7 +1244,7 @@ fn main() {
                         map.render_tiles(picker_target, &picker_renderer, current_camera);
 
                         #[debug_condition(render_settings.show_entities)]
-                        map.render_entities(entities, picker_target, &picker_renderer, current_camera, false);
+                        map.render_entities(picker_target, &picker_renderer, current_camera, entities, false);
 
                         #[cfg(feature = "debug")]
                         map.render_markers(
@@ -1237,6 +1257,68 @@ fn main() {
                         );
 
                         picker_target.finish();
+
+                        let cube_shadow_target = &mut cube_shadow_targets[image_number];
+
+                        {
+                            #[cfg(feature = "debug")]
+                            profile_block!("render cube map");
+
+                            point_shadow_camera.generate_view_projection(window_size_f32);
+
+                            cube_shadow_target.start_cube();
+
+                            point_shadow_renderer.set_position(point_shadow_camera.get_camera_position());
+
+                            for index in 0..6 {
+                                cube_shadow_target.start_cube_pass(index);
+
+                                point_shadow_camera.change_direction(index);
+
+                                #[debug_condition(render_settings.show_map)]
+                                map.render_ground(
+                                    cube_shadow_target,
+                                    &point_shadow_renderer,
+                                    &point_shadow_camera,
+                                    animation_timer,
+                                );
+
+                                #[debug_condition(render_settings.show_objects)]
+                                map.render_objects(
+                                    cube_shadow_target,
+                                    &point_shadow_renderer,
+                                    &point_shadow_camera,
+                                    client_tick,
+                                    animation_timer,
+                                    #[cfg(feature = "debug")]
+                                    render_settings.frustum_culling,
+                                );
+
+                                #[debug_condition(render_settings.show_entities)]
+                                map.render_entities(
+                                    cube_shadow_target,
+                                    &point_shadow_renderer,
+                                    &point_shadow_camera,
+                                    entities,
+                                    false,
+                                );
+
+                                if let Some(PickerTarget::Tile { x, y }) = mouse_target && !entities.is_empty() {
+                                    #[debug_condition(render_settings.show_indicators)]
+                                    map.render_walk_indicator(
+                                        cube_shadow_target,
+                                        &point_shadow_renderer,
+                                        &point_shadow_camera,
+                                        walk_indicator_color,
+                                        Vector2::new(x as usize, y as usize),
+                                        );
+                                }
+
+                                cube_shadow_target.finish_cube_pass();
+                            }
+
+                            cube_shadow_target.finish_cube();
+                        }
                     });
 
                     scope.spawn(|_| {
@@ -1268,10 +1350,10 @@ fn main() {
 
                         #[debug_condition(render_settings.show_entities)]
                         map.render_entities(
-                            entities,
                             directional_shadow_target,
                             &shadow_renderer,
                             &directional_shadow_camera,
+                            entities,
                             true,
                         );
 
@@ -1287,6 +1369,61 @@ fn main() {
                         }
 
                         directional_shadow_target.finish();
+                    });
+
+                    scope.spawn(|_| {
+                        #[cfg(feature = "debug")]
+                        let _measurement = profiler_start_point_shadow_thread();
+
+                        /*let cube_shadow_target = &mut cube_shadow_targets[image_number];
+
+                        {
+                            #[cfg(feature = "debug")]
+                            profile_block!("render cube map");
+
+                            point_shadow_camera.generate_view_projection(window_size_f32);
+
+                            cube_shadow_target.start_cube();
+
+                            for index in 0..3 {
+                                cube_shadow_target.start_cube_pass(index);
+
+                                point_shadow_camera.change_direction(index);
+
+                                #[debug_condition(render_settings.show_map)]
+                                map.render_ground(cube_shadow_target, &shadow_renderer, &point_shadow_camera, animation_timer);
+
+                                #[debug_condition(render_settings.show_objects)]
+                                map.render_objects(
+                                    cube_shadow_target,
+                                    &shadow_renderer,
+                                    &point_shadow_camera,
+                                    client_tick,
+                                    animation_timer,
+                                    #[cfg(feature = "debug")]
+                                    render_settings.frustum_culling,
+                                );
+
+                                //#[debug_condition(render_settings.show_entities)]
+                                //map.render_entities(cube_shadow_target, &shadow_renderer,
+                                // &point_shadow_camera, entities, true);
+
+                                /*if let Some(PickerTarget::Tile { x, y }) = mouse_target && !entities.is_empty() {
+                                    #[debug_condition(render_settings.show_indicators)]
+                                    map.render_walk_indicator(
+                                        cube_shadow_target,
+                                        &shadow_renderer,
+                                        &point_shadow_camera,
+                                        walk_indicator_color,
+                                        Vector2::new(x as usize, y as usize),
+                                    );
+                                }*/
+
+                                cube_shadow_target.finish_cube_pass();
+                            }
+
+                            cube_shadow_target.finish_cube();
+                        }*/
                     });
 
                     scope.spawn(|_| {
@@ -1315,7 +1452,7 @@ fn main() {
                         );
 
                         #[debug_condition(render_settings.show_entities)]
-                        map.render_entities(entities, screen_target, &deferred_renderer, current_camera, true);
+                        map.render_entities(screen_target, &deferred_renderer, current_camera, entities, true);
 
                         #[debug_condition(render_settings.show_water)]
                         map.render_water(screen_target, &deferred_renderer, current_camera, animation_timer);
@@ -1352,6 +1489,19 @@ fn main() {
                         #[debug_condition(render_settings.show_point_lights && !render_settings.show_buffers())]
                         map.point_lights(screen_target, &deferred_renderer, current_camera);
 
+                        if !entities.is_empty() {
+                            let player_position = entities[0].get_position();
+
+                            deferred_renderer.point_light_with_shadows(
+                                screen_target,
+                                current_camera,
+                                cube_shadow_image.clone(),
+                                player_position + Vector3::new(0.0, OFFSET, 0.0),
+                                Color::rgb(255, 0, 0),
+                                50.0,
+                            );
+                        }
+
                         #[debug_condition(render_settings.show_water && !render_settings.show_buffers())]
                         map.water_light(screen_target, &deferred_renderer, current_camera);
 
@@ -1364,6 +1514,18 @@ fn main() {
                             entities,
                             hovered_marker_identifier,
                         );
+
+                        if !entities.is_empty() {
+                            let player_position = entities[0].get_position();
+
+                            deferred_renderer.render_marker(
+                                screen_target,
+                                current_camera,
+                                MarkerIdentifier::LightSource(0),
+                                player_position + Vector3::new(0.0, OFFSET, 0.0),
+                                false,
+                            );
+                        }
 
                         #[cfg(feature = "debug")]
                         if render_settings.show_bounding_boxes {
@@ -1420,10 +1582,13 @@ fn main() {
                         fence.wait(None).unwrap();
                     }
 
+                    let test_shadow_image = test_shadow_image.unwrap_or_else(|| directional_shadow_image.clone());
+
                     deferred_renderer.overlay_buffers(
                         screen_target,
                         picker_target.image.clone(),
                         directional_shadow_image,
+                        test_shadow_image,
                         font_loader.borrow().get_font_atlas(),
                         &render_settings,
                     );
@@ -1492,6 +1657,7 @@ fn main() {
 
                 let combined_future = interface_future
                     .join(directional_shadow_future)
+                    .join(cube_shadow_targets[image_number].state.take_semaphore())
                     .join(swapchain_acquire_future)
                     .boxed();
 

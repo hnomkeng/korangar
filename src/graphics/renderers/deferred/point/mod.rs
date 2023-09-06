@@ -7,6 +7,7 @@ use cgmath::Vector3;
 use procedural::profile;
 use vulkano::descriptor_set::WriteDescriptorSet;
 use vulkano::device::{Device, DeviceOwned};
+use vulkano::image::sampler::Sampler;
 use vulkano::padded::Padded;
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint};
@@ -16,6 +17,7 @@ use vulkano::shader::EntryPoint;
 use self::fragment_shader::{Constants, Matrices};
 use super::DeferredSubrenderer;
 use crate::graphics::renderers::pipeline::PipelineBuilder;
+use crate::graphics::renderers::sampler::{create_new_sampler, SamplerType};
 use crate::graphics::*;
 
 pub struct PointLightRenderer {
@@ -23,6 +25,7 @@ pub struct PointLightRenderer {
     vertex_shader: EntryPoint,
     fragment_shader: EntryPoint,
     matrices_buffer: MatrixAllocator<Matrices>,
+    linear_sampler: Arc<Sampler>,
     pipeline: Arc<GraphicsPipeline>,
 }
 
@@ -32,6 +35,7 @@ impl PointLightRenderer {
         let vertex_shader = vertex_shader::entry_point(&device);
         let fragment_shader = fragment_shader::entry_point(&device);
         let matrices_buffer = MatrixAllocator::new(&memory_allocator);
+        let linear_sampler = create_new_sampler(&device, SamplerType::Linear);
         let pipeline = Self::create_pipeline(device, subpass, viewport, &vertex_shader, &fragment_shader);
 
         Self {
@@ -39,6 +43,7 @@ impl PointLightRenderer {
             vertex_shader,
             fragment_shader,
             matrices_buffer,
+            linear_sampler,
             pipeline,
         }
     }
@@ -104,7 +109,6 @@ impl PointLightRenderer {
         }
 
         let layout = self.pipeline.layout().clone();
-
         let (screen_position, screen_size) = camera.screen_position_size(top_left_position, bottom_right_position);
 
         let constants = Constants {

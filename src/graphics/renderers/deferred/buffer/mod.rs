@@ -75,6 +75,7 @@ impl BufferRenderer {
         render_target: &mut <DeferredRenderer as Renderer>::Target,
         picker_image: Arc<ImageView>,
         light_image: Arc<ImageView>,
+        point_light_image: Arc<ImageView>,
         font_atlas: Arc<ImageView>,
         render_settings: &RenderSettings,
     ) {
@@ -89,7 +90,8 @@ impl BufferRenderer {
             WriteDescriptorSet::image_view(3, render_target.depth_image.clone()),
             WriteDescriptorSet::image_view_sampler(4, picker_image, self.nearest_sampler.clone()),
             WriteDescriptorSet::image_view_sampler(5, light_image, self.nearest_sampler.clone()),
-            WriteDescriptorSet::image_view_sampler(6, font_atlas, self.nearest_sampler.clone()),
+            WriteDescriptorSet::image_view_sampler(6, point_light_image, self.nearest_sampler.clone()),
+            WriteDescriptorSet::image_view_sampler(7, font_atlas, self.nearest_sampler.clone()),
         ]);
 
         let constants = Constants {

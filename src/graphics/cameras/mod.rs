@@ -1,6 +1,7 @@
 #[cfg(feature = "debug")]
 mod debug;
 mod player;
+mod point;
 mod shadow;
 mod start;
 
@@ -9,6 +10,7 @@ use cgmath::{InnerSpace, Matrix4, Vector2, Vector3, Vector4};
 #[cfg(feature = "debug")]
 pub use self::debug::DebugCamera;
 pub use self::player::PlayerCamera;
+pub use self::point::PointShadowCamera;
 pub use self::shadow::ShadowCamera;
 pub use self::start::StartCamera;
 use crate::graphics::{SmoothedValue, Transform};

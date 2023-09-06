@@ -37,6 +37,19 @@ pub enum PickerSubrenderer {
     Marker,
 }
 
+impl VariantEq for PickerSubrenderer {
+    fn variant_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Geometry, Self::Geometry) => true,
+            (Self::Entity, Self::Entity) => true,
+            (Self::Tile, Self::Tile) => true,
+            #[cfg(feature = "debug")]
+            (Self::Marker, Self::Marker) => true,
+            _ => false,
+        }
+    }
+}
+
 pub struct PickerRenderer {
     memory_allocator: Arc<MemoryAllocator>,
     queue: Arc<Queue>,

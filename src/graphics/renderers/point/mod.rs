@@ -4,7 +4,7 @@ mod indicator;
 
 use std::sync::Arc;
 
-use cgmath::{Matrix4, Vector2, Vector3};
+use cgmath::{Matrix4, Point3, Vector2, Vector3};
 use vulkano::device::{DeviceOwned, Queue};
 use vulkano::format::{ClearValue, Format};
 use vulkano::image::{ImageUsage, SampleCount};
@@ -21,13 +21,13 @@ use crate::loaders::{GameFileLoader, TextureLoader};
 use crate::network::EntityId;
 
 #[derive(PartialEq)]
-pub enum ShadowSubrenderer {
+pub enum PointShadowSubrenderer {
     Geometry(Matrix4<f32>, f32),
     Entity,
     Indicator,
 }
 
-impl VariantEq for ShadowSubrenderer {
+impl VariantEq for PointShadowSubrenderer {
     fn variant_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Geometry(..), Self::Geometry(..)) => true,
@@ -38,7 +38,7 @@ impl VariantEq for ShadowSubrenderer {
     }
 }
 
-pub struct ShadowRenderer {
+pub struct PointShadowRenderer {
     memory_allocator: Arc<MemoryAllocator>,
     queue: Arc<Queue>,
     render_pass: Arc<RenderPass>,
@@ -46,12 +46,13 @@ pub struct ShadowRenderer {
     entity_renderer: EntityRenderer,
     indicator_renderer: IndicatorRenderer,
     walk_indicator: Arc<ImageView>,
+    position: Point3<f32>,
 }
 
-unsafe impl Send for ShadowRenderer {}
-unsafe impl Sync for ShadowRenderer {}
+unsafe impl Send for PointShadowRenderer {}
+unsafe impl Sync for PointShadowRenderer {}
 
-impl ShadowRenderer {
+impl PointShadowRenderer {
     const fn subpass() -> SubpassAttachments {
         SubpassAttachments { color: 0, depth: 1 }
     }
@@ -95,7 +96,12 @@ impl ShadowRenderer {
             entity_renderer,
             indicator_renderer,
             walk_indicator,
+            position: Point3::new(0.0, 0.0, 0.0),
         }
+    }
+
+    pub fn set_position(&mut self, position: Point3<f32>) {
+        self.position = position;
     }
 
     pub fn create_render_target(&self, size: u32, array_layers: u32) -> <Self as Renderer>::Target {
@@ -112,19 +118,19 @@ impl ShadowRenderer {
     }
 }
 
-pub struct ShadowFormat {}
+pub struct PointShadowFormat {}
 
-impl IntoFormat for ShadowFormat {
+impl IntoFormat for PointShadowFormat {
     fn into_format() -> Format {
         Format::D32_SFLOAT
     }
 }
 
-impl Renderer for ShadowRenderer {
-    type Target = SingleRenderTarget<ShadowFormat, ShadowSubrenderer, ClearValue>;
+impl Renderer for PointShadowRenderer {
+    type Target = SingleRenderTarget<PointShadowFormat, PointShadowSubrenderer, ClearValue>;
 }
 
-impl GeometryRendererTrait for ShadowRenderer {
+impl GeometryRendererTrait for PointShadowRenderer {
     fn render_geometry(
         &self,
         render_target: &mut <Self as Renderer>::Target,
@@ -136,12 +142,19 @@ impl GeometryRendererTrait for ShadowRenderer {
     ) where
         Self: Renderer,
     {
-        self.geometry_renderer
-            .render(render_target, camera, vertex_buffer, textures, world_matrix, time);
+        self.geometry_renderer.render(
+            render_target,
+            camera,
+            self.position,
+            vertex_buffer,
+            textures,
+            world_matrix,
+            time,
+        );
     }
 }
 
-impl EntityRendererTrait for ShadowRenderer {
+impl EntityRendererTrait for PointShadowRenderer {
     fn render_entity(
         &self,
         render_target: &mut <Self as Renderer>::Target,
@@ -160,6 +173,7 @@ impl EntityRendererTrait for ShadowRenderer {
         self.entity_renderer.render(
             render_target,
             camera,
+            self.position,
             texture,
             position,
             origin,
@@ -171,7 +185,7 @@ impl EntityRendererTrait for ShadowRenderer {
     }
 }
 
-impl IndicatorRendererTrait for ShadowRenderer {
+impl IndicatorRendererTrait for PointShadowRenderer {
     fn render_walk_indicator(
         &self,
         render_target: &mut <Self as Renderer>::Target,
@@ -187,6 +201,7 @@ impl IndicatorRendererTrait for ShadowRenderer {
         self.indicator_renderer.render_ground_indicator(
             render_target,
             camera,
+            self.position,
             self.walk_indicator.clone(),
             upper_left,
             upper_right,

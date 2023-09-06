@@ -195,10 +195,10 @@ impl Map {
     #[profile]
     pub fn render_entities<T>(
         &self,
-        entities: &[Entity],
         render_target: &mut T::Target,
         renderer: &T,
         camera: &dyn Camera,
+        entities: &[Entity],
         include_self: bool,
     ) where
         T: Renderer + EntityRenderer,

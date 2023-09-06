@@ -254,7 +254,7 @@ impl ModelLoader {
         let (main_matrix, transform_matrix, box_transform_matrix) = Self::calculate_matrices(current_node, parent_matrix);
         let vertices = NativeModelVertex::to_vertices(Self::make_vertices(current_node, &main_matrix, reverse_order));
 
-        let vertex_buffer = buffer_allocator.allocate_vertex_buffer(vertices);
+        let vertex_buffer = (!vertices.is_empty()).then(|| buffer_allocator.allocate_vertex_buffer(vertices));
 
         let box_matrix = box_transform_matrix * main_matrix;
         let bounding_box = BoundingBox::new(
